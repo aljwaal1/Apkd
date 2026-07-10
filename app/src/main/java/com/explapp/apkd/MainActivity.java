@@ -15,23 +15,31 @@ import android.webkit.WebView;
 import android.webkit.WebViewClient;
 import android.widget.Toast;
 
+import org.conscrypt.Conscrypt;
 import org.json.JSONObject;
 
-import java.io.BufferedReader;
-import java.io.InputStream;
-import java.io.InputStreamReader;
-import java.net.URL;
-import java.nio.charset.Charset;
+import java.security.Security;
+import java.util.concurrent.TimeUnit;
 
-import javax.net.ssl.HttpsURLConnection;
-import javax.net.ssl.SSLContext;
+import okhttp3.OkHttpClient;
+import okhttp3.Request;
+import okhttp3.Response;
 
 public class MainActivity extends Activity {
     private WebView web;
+    private OkHttpClient httpClient;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+
+        installModernTlsProvider();
+        httpClient = new OkHttpClient.Builder()
+                .connectTimeout(25, TimeUnit.SECONDS)
+                .readTimeout(40, TimeUnit.SECONDS)
+                .writeTimeout(25, TimeUnit.SECONDS)
+                .retryOnConnectionFailure(true)
+                .build();
 
         web = new WebView(this);
         setContentView(web);
@@ -62,6 +70,16 @@ public class MainActivity extends Activity {
         web.loadUrl("file:///android_asset/index.html");
     }
 
+    private void installModernTlsProvider() {
+        try {
+            if (Security.getProvider("Conscrypt") == null) {
+                Security.insertProviderAt(Conscrypt.newProvider(), 1);
+            }
+        } catch (Throwable ignored) {
+            // If provider installation fails, OkHttp will still try the system provider.
+        }
+    }
+
     private class GitHubBridge {
         @JavascriptInterface
         public void get(final String path, final String token, final String requestId) {
@@ -69,48 +87,32 @@ public class MainActivity extends Activity {
                 @Override
                 public void run() {
                     int status = 0;
-                    String body = "";
-                    HttpsURLConnection connection = null;
+                    String body;
+                    Response response = null;
                     try {
-                        SSLContext context = SSLContext.getInstance("TLSv1.2");
-                        context.init(null, null, null);
+                        Request.Builder builder = new Request.Builder()
+                                .url("https://api.github.com" + path)
+                                .header("Accept", "application/vnd.github+json")
+                                .header("User-Agent", "Apkd-Legacy-Android-4.4");
 
-                        URL url = new URL("https://api.github.com" + path);
-                        connection = (HttpsURLConnection) url.openConnection();
-                        connection.setSSLSocketFactory(context.getSocketFactory());
-                        connection.setConnectTimeout(20000);
-                        connection.setReadTimeout(30000);
-                        connection.setRequestMethod("GET");
-                        connection.setRequestProperty("Accept", "application/vnd.github+json");
-                        connection.setRequestProperty("User-Agent", "Apkd-Legacy-Android-4.4");
                         if (token != null && token.trim().length() > 0) {
-                            connection.setRequestProperty("Authorization", "Bearer " + token.trim());
+                            builder.header("Authorization", "Bearer " + token.trim());
                         }
 
-                        status = connection.getResponseCode();
-                        InputStream stream = status >= 200 && status < 400
-                                ? connection.getInputStream()
-                                : connection.getErrorStream();
-                        body = readAll(stream);
+                        response = httpClient.newCall(builder.build()).execute();
+                        status = response.code();
+                        body = response.body() == null ? "" : response.body().string();
                     } catch (Exception e) {
-                        body = "{\"message\":" + JSONObject.quote(e.getClass().getSimpleName() + ": " + e.getMessage()) + "}";
+                        body = "{\"message\":" + JSONObject.quote(
+                                "تعذر الاتصال الآمن بـ GitHub: " + e.getClass().getSimpleName() + ": " + e.getMessage()
+                        ) + "}";
                     } finally {
-                        if (connection != null) connection.disconnect();
+                        if (response != null) response.close();
                     }
                     sendNativeResult(requestId, status, body);
                 }
             }).start();
         }
-    }
-
-    private String readAll(InputStream stream) throws Exception {
-        if (stream == null) return "";
-        BufferedReader reader = new BufferedReader(new InputStreamReader(stream, Charset.forName("UTF-8")));
-        StringBuilder result = new StringBuilder();
-        String line;
-        while ((line = reader.readLine()) != null) result.append(line);
-        reader.close();
-        return result.toString();
     }
 
     private void sendNativeResult(final String requestId, final int status, final String body) {

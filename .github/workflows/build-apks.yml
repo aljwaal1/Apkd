@@ -1,4 +1,4 @@
-name: Build Modern and Legacy APKs
+name: Build APK Downloader and LocalSend
 
 on:
   workflow_dispatch:
@@ -24,7 +24,7 @@ jobs:
           gradle-version: '8.7'
 
       - name: Build signed APKs
-        run: gradle :app:assembleRelease :modern:assembleRelease
+        run: gradle :app:assembleRelease :modern:assembleRelease :localsend:assembleRelease
 
       - name: Locate, verify and copy APKs
         shell: bash
@@ -34,21 +34,22 @@ jobs:
 
           LEGACY_APK=$(find app/build/outputs/apk/release -type f -name '*.apk' | head -n 1)
           MODERN_APK=$(find modern/build/outputs/apk/release -type f -name '*.apk' | head -n 1)
+          LOCALSEND_APK=$(find localsend/build/outputs/apk/release -type f -name '*.apk' | head -n 1)
 
           test -n "${LEGACY_APK:-}" || { echo "Legacy APK was not generated"; exit 1; }
           test -n "${MODERN_APK:-}" || { echo "Modern APK was not generated"; exit 1; }
-
-          echo "Legacy APK: $LEGACY_APK"
-          echo "Modern APK: $MODERN_APK"
+          test -n "${LOCALSEND_APK:-}" || { echo "LocalSend APK was not generated"; exit 1; }
 
           APKSIGNER=$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -n 1)
           test -x "$APKSIGNER" || { echo "apksigner was not found"; exit 1; }
 
           "$APKSIGNER" verify --verbose --print-certs "$LEGACY_APK"
           "$APKSIGNER" verify --verbose --print-certs "$MODERN_APK"
+          "$APKSIGNER" verify --verbose --print-certs "$LOCALSEND_APK"
 
           cp "$LEGACY_APK" apk/Apkd-Legacy-Android-4.4.apk
           cp "$MODERN_APK" apk/Apkd-Modern.apk
+          cp "$LOCALSEND_APK" apk/LocalSend-Phone-to-Phone.apk
 
           ls -lh apk
 
@@ -56,6 +57,6 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add apk/Apkd-Legacy-Android-4.4.apk apk/Apkd-Modern.apk
-          git diff --cached --quiet || git commit -m "Build signed modern and legacy APKs"
+          git add apk/Apkd-Legacy-Android-4.4.apk apk/Apkd-Modern.apk apk/LocalSend-Phone-to-Phone.apk
+          git diff --cached --quiet || git commit -m "Build APK Downloader and LocalSend APKs"
           git push

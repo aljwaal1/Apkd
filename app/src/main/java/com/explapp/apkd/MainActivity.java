@@ -1,14 +1,11 @@
 package com.explapp.apkd;
 
 import android.app.Activity;
-import android.app.DownloadManager;
-import android.content.Context;
+import android.content.ActivityNotFoundException;
 import android.content.Intent;
 import android.net.Uri;
 import android.os.Bundle;
-import android.os.Environment;
 import android.webkit.DownloadListener;
-import android.webkit.URLUtil;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
@@ -20,32 +17,60 @@ public class MainActivity extends Activity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+
         web = new WebView(this);
         setContentView(web);
-        WebSettings s = web.getSettings();
-        s.setJavaScriptEnabled(true);
-        s.setDomStorageEnabled(true);
-        s.setAllowFileAccess(true);
-        web.setWebViewClient(new WebViewClient());
+
+        WebSettings settings = web.getSettings();
+        settings.setJavaScriptEnabled(true);
+        settings.setDomStorageEnabled(true);
+        settings.setAllowFileAccess(true);
+
+        web.setWebViewClient(new WebViewClient() {
+            @Override
+            public boolean shouldOverrideUrlLoading(WebView view, String url) {
+                if (isExternalLink(url)) {
+                    openExternal(url);
+                    return true;
+                }
+                return false;
+            }
+        });
+
         web.setDownloadListener(new DownloadListener() {
             @Override
             public void onDownloadStart(String url, String userAgent, String contentDisposition, String mimeType, long contentLength) {
-                try {
-                    DownloadManager.Request request = new DownloadManager.Request(Uri.parse(url));
-                    request.setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED);
-                    request.setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, URLUtil.guessFileName(url, contentDisposition, mimeType));
-                    ((DownloadManager) getSystemService(Context.DOWNLOAD_SERVICE)).enqueue(request);
-                    Toast.makeText(MainActivity.this, "بدأ التنزيل", Toast.LENGTH_SHORT).show();
-                } catch (Exception e) {
-                    startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(url)));
-                }
+                openExternal(url);
             }
         });
+
         web.loadUrl("file:///android_asset/index.html");
+    }
+
+    private boolean isExternalLink(String url) {
+        if (url == null) return false;
+        String lower = url.toLowerCase();
+        return lower.startsWith("http://") || lower.startsWith("https://");
+    }
+
+    private void openExternal(String url) {
+        try {
+            Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(url));
+            startActivity(intent);
+            Toast.makeText(this, "سيبدأ التنزيل من المتصفح", Toast.LENGTH_SHORT).show();
+        } catch (ActivityNotFoundException e) {
+            Toast.makeText(this, "لا يوجد متصفح لفتح رابط التنزيل", Toast.LENGTH_LONG).show();
+        } catch (Exception e) {
+            Toast.makeText(this, "تعذر فتح رابط التنزيل", Toast.LENGTH_LONG).show();
+        }
     }
 
     @Override
     public void onBackPressed() {
-        if (web.canGoBack()) web.goBack(); else super.onBackPressed();
+        if (web.canGoBack()) {
+            web.goBack();
+        } else {
+            super.onBackPressed();
+        }
     }
 }

@@ -2,7 +2,6 @@ package com.explapp.localsend;
 
 import android.Manifest;
 import android.app.Activity;
-import android.content.ContentResolver;
 import android.content.ContentValues;
 import android.content.Intent;
 import android.content.SharedPreferences;
@@ -26,33 +25,32 @@ import android.widget.Toast;
 
 import androidx.documentfile.provider.DocumentFile;
 
+import java.io.BufferedInputStream;
+import java.io.BufferedOutputStream;
+import java.io.DataInputStream;
+import java.io.DataOutputStream;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.io.OutputStream;
-import java.net.HttpURLConnection;
 import java.net.InetAddress;
 import java.net.NetworkInterface;
-import java.net.URL;
-import java.net.URLDecoder;
-import java.net.URLEncoder;
+import java.net.ServerSocket;
+import java.net.Socket;
+import java.net.SocketTimeoutException;
 import java.util.ArrayList;
 import java.util.Collections;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
-
-import fi.iki.elonen.NanoHTTPD;
 
 public class MainActivity extends Activity {
     private static final int PICK_FILES = 100;
     private static final int PICK_FOLDER = 101;
     private static final int PICK_OLD = 102;
     private static final int PERM = 103;
+    private static final int PORT = 5051;
+    private static final String MAGIC = "EXPLSEND2";
     private static final String PREFS = "localsend_settings";
     private static final String KEY_TARGET = "saved_target";
-    private static final int PORT = 5051;
 
     private final ArrayList<Item> selected = new ArrayList<Item>();
     private TextView status;
@@ -60,17 +58,15 @@ public class MainActivity extends Activity {
     private TextView myAddress;
     private EditText target;
     private ProgressBar progress;
-    private LocalServer server;
     private SharedPreferences prefs;
+    private volatile boolean receiving;
+    private ServerSocket serverSocket;
+    private Thread serverThread;
 
     static class Item {
         String uri;
         String name;
-
-        Item(String uri, String name) {
-            this.uri = uri;
-            this.name = name;
-        }
+        Item(String uri, String name) { this.uri = uri; this.name = name; }
     }
 
     @Override
@@ -86,12 +82,12 @@ public class MainActivity extends Activity {
         scroll.addView(root);
 
         TextView title = new TextView(this);
-        title.setText("الإرسال المحلي بين الهاتف والكمبيوتر");
+        title.setText("الإرسال المحلي الموحد V2");
         title.setTextSize(23);
         root.addView(title);
 
         TextView note = new TextView(this);
-        note.setText("يعمل داخل شبكة Wi-Fi نفسها: هاتف ↔ هاتف، كمبيوتر → هاتف، وهاتف → كمبيوتر. الملفات المستلمة تحفظ في Download/LocalSend.");
+        note.setText("هاتف ↔ هاتف، كمبيوتر ↔ هاتف. يعمل داخل شبكة Wi‑Fi نفسها عبر Streaming مباشر دون HTTP. الملفات المستلمة تحفظ في Download/LocalSend.");
         note.setPadding(0, 8, 0, 14);
         root.addView(note);
 
@@ -102,67 +98,48 @@ public class MainActivity extends Activity {
 
         Button start = button("تشغيل استقبال الملفات");
         start.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                startServer();
-            }
+            @Override public void onClick(View v) { startReceiver(); }
         });
         root.addView(start);
 
         Button stop = button("إيقاف الاستقبال");
         stop.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                stopServer();
-            }
+            @Override public void onClick(View v) { stopReceiver(); }
         });
         root.addView(stop);
 
         target = new EditText(this);
-        target.setHint("IP أو رابط الجهاز المستقبل مثل 192.168.1.20");
+        target.setHint("IP الجهاز المستقبل مثل 192.168.1.20");
         target.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI);
         target.setText(prefs.getString(KEY_TARGET, ""));
         root.addView(target);
 
         Button saveIp = button("حفظ عنوان IP");
         saveIp.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                saveTarget();
-            }
+            @Override public void onClick(View v) { saveTarget(); }
         });
         root.addView(saveIp);
 
         Button files = button("اختيار عدة ملفات من Download");
         files.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                pickFiles();
-            }
+            @Override public void onClick(View v) { pickFiles(); }
         });
         root.addView(files);
 
         Button folder = button("اختيار مجلد كامل");
         folder.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                pickFolder();
-            }
+            @Override public void onClick(View v) { pickFolder(); }
         });
         root.addView(folder);
 
         Button send = button("إرسال المحدد");
         send.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                sendSelected();
-            }
+            @Override public void onClick(View v) { sendSelected(); }
         });
         root.addView(send);
 
         progress = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
         progress.setMax(100);
-        progress.setProgress(0);
         root.addView(progress);
 
         selectedView = new TextView(this);
@@ -176,13 +153,13 @@ public class MainActivity extends Activity {
         setContentView(scroll);
         updateAddress();
         updateSelected();
-        startServer();
+        startReceiver();
     }
 
     private Button button(String text) {
-        Button button = new Button(this);
-        button.setText(text);
-        return button;
+        Button b = new Button(this);
+        b.setText(text);
+        return b;
     }
 
     private void requestStorageIfNeeded() {
@@ -193,60 +170,125 @@ public class MainActivity extends Activity {
     }
 
     private void saveTarget() {
-        String value = target.getText().toString().trim();
+        String value = cleanHost(target.getText().toString());
+        target.setText(value);
         prefs.edit().putString(KEY_TARGET, value).apply();
         Toast.makeText(this, "تم حفظ عنوان الجهاز", Toast.LENGTH_SHORT).show();
     }
 
+    private String cleanHost(String value) {
+        if (value == null) return "";
+        String v = value.trim();
+        v = v.replace("http://", "").replace("https://", "");
+        int slash = v.indexOf('/');
+        if (slash >= 0) v = v.substring(0, slash);
+        int colon = v.indexOf(':');
+        if (colon >= 0) v = v.substring(0, colon);
+        return v.trim();
+    }
+
     private void updateAddress() {
-        String ip = getIp();
-        myAddress.setText("عنوان هذا الجهاز للاستقبال:\nhttp://" + ip + ":" + PORT + "/upload\nيمكن فتحه من متصفح الكمبيوتر أو استخدامه في التطبيق الآخر.");
+        myAddress.setText("عنوان هذا الجهاز للاستقبال:\n" + getIp() + ":" + PORT + "\nاستخدم هذا العنوان في الهاتف أو أداة ويندوز الأخرى.");
     }
 
     private String getIp() {
         try {
             for (NetworkInterface ni : Collections.list(NetworkInterface.getNetworkInterfaces())) {
-                for (InetAddress address : Collections.list(ni.getInetAddresses())) {
-                    String host = address.getHostAddress();
-                    if (!address.isLoopbackAddress() && host != null && host.indexOf(':') < 0) {
-                        return host;
-                    }
+                for (InetAddress a : Collections.list(ni.getInetAddresses())) {
+                    String h = a.getHostAddress();
+                    if (!a.isLoopbackAddress() && h != null && h.indexOf(':') < 0) return h;
                 }
             }
-        } catch (Exception ignored) {
-        }
+        } catch (Exception ignored) {}
         return "0.0.0.0";
     }
 
-    private void startServer() {
-        try {
-            if (server != null) {
-                server.stop();
-            }
-            server = new LocalServer(PORT);
-            server.start(NanoHTTPD.SOCKET_READ_TIMEOUT, false);
-            status.setText("الاستقبال يعمل الآن");
-            updateAddress();
-        } catch (Exception e) {
-            status.setText("تعذر تشغيل الاستقبال: " + safeMessage(e));
+    private synchronized void startReceiver() {
+        if (receiving) {
+            status.setText("الاستقبال يعمل الآن على المنفذ " + PORT);
+            return;
         }
+        receiving = true;
+        serverThread = new Thread(new Runnable() {
+            @Override public void run() {
+                try {
+                    serverSocket = new ServerSocket(PORT);
+                    serverSocket.setReuseAddress(true);
+                    ui("الاستقبال يعمل الآن على المنفذ " + PORT, -1);
+                    while (receiving) {
+                        Socket socket = serverSocket.accept();
+                        handleIncoming(socket);
+                    }
+                } catch (Exception e) {
+                    if (receiving) ui("تعذر تشغيل الاستقبال: " + safeMessage(e), -1);
+                } finally {
+                    closeServer();
+                }
+            }
+        });
+        serverThread.start();
     }
 
-    private void stopServer() {
-        if (server != null) {
-            server.stop();
-            server = null;
-        }
+    private synchronized void stopReceiver() {
+        receiving = false;
+        closeServer();
         status.setText("تم إيقاف الاستقبال");
+    }
+
+    private void closeServer() {
+        try { if (serverSocket != null) serverSocket.close(); } catch (Exception ignored) {}
+        serverSocket = null;
+    }
+
+    private void handleIncoming(Socket socket) {
+        DataInputStream in = null;
+        DataOutputStream out = null;
+        OutputStream fileOut = null;
+        try {
+            socket.setSoTimeout(120000);
+            in = new DataInputStream(new BufferedInputStream(socket.getInputStream(), 64 * 1024));
+            out = new DataOutputStream(new BufferedOutputStream(socket.getOutputStream()));
+            String magic = in.readUTF();
+            if (!MAGIC.equals(magic)) throw new Exception("بروتوكول غير متوافق");
+            String name = safeName(in.readUTF());
+            long size = in.readLong();
+            if (size < 0) throw new Exception("حجم ملف غير صالح");
+
+            SaveTarget saveTarget = createSaveTarget(name);
+            fileOut = saveTarget.output;
+            byte[] buffer = new byte[64 * 1024];
+            long received = 0;
+            while (received < size) {
+                int need = (int)Math.min(buffer.length, size - received);
+                int n = in.read(buffer, 0, need);
+                if (n < 0) throw new Exception("انقطع الاتصال قبل اكتمال الملف");
+                fileOut.write(buffer, 0, n);
+                received += n;
+                final int percent = size == 0 ? 100 : (int)((received * 100L) / size);
+                ui("جاري الاستقبال: " + name + " — " + percent + "%", percent);
+            }
+            fileOut.flush();
+            fileOut.close();
+            fileOut = null;
+            out.writeUTF("OK");
+            out.flush();
+            ui("تم استلام: " + name, 100);
+        } catch (Exception e) {
+            try { if (out != null) { out.writeUTF("ERROR:" + safeMessage(e)); out.flush(); } } catch (Exception ignored) {}
+            ui("فشل الاستقبال: " + safeMessage(e), -1);
+        } finally {
+            try { if (fileOut != null) fileOut.close(); } catch (Exception ignored) {}
+            try { socket.close(); } catch (Exception ignored) {}
+        }
     }
 
     private void pickFiles() {
         if (Build.VERSION.SDK_INT >= 19) {
-            Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
-            intent.setType("*/*");
-            intent.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true);
-            intent.addCategory(Intent.CATEGORY_OPENABLE);
-            startActivityForResult(intent, PICK_FILES);
+            Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+            i.setType("*/*");
+            i.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true);
+            i.addCategory(Intent.CATEGORY_OPENABLE);
+            startActivityForResult(i, PICK_FILES);
         } else {
             startActivityForResult(new Intent(this, FilePickerActivity.class), PICK_OLD);
         }
@@ -263,37 +305,22 @@ public class MainActivity extends Activity {
     @Override
     protected void onActivityResult(int request, int result, Intent data) {
         super.onActivityResult(request, result, data);
-        if (result != RESULT_OK || data == null) {
-            return;
-        }
+        if (result != RESULT_OK || data == null) return;
         try {
             if (request == PICK_OLD) {
                 ArrayList<String> paths = data.getStringArrayListExtra("paths");
-                if (paths != null) {
-                    for (String path : paths) {
-                        File file = new File(path);
-                        addItem(Uri.fromFile(file), file.getName());
-                    }
-                }
+                if (paths != null) for (String p : paths) addItem(Uri.fromFile(new File(p)), new File(p).getName());
             } else if (request == PICK_FOLDER) {
                 Uri uri = data.getData();
-                if (uri != null) {
-                    try {
-                        getContentResolver().takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION);
-                    } catch (Exception ignored) {
-                    }
-                    collectDoc(DocumentFile.fromTreeUri(this, uri));
-                }
-            } else {
-                if (data.getClipData() != null) {
-                    for (int i = 0; i < data.getClipData().getItemCount(); i++) {
-                        Uri uri = data.getClipData().getItemAt(i).getUri();
-                        addItem(uri, nameOf(uri));
-                    }
-                } else if (data.getData() != null) {
-                    Uri uri = data.getData();
+                if (uri != null) collectDoc(DocumentFile.fromTreeUri(this, uri));
+            } else if (data.getClipData() != null) {
+                for (int i = 0; i < data.getClipData().getItemCount(); i++) {
+                    Uri uri = data.getClipData().getItemAt(i).getUri();
                     addItem(uri, nameOf(uri));
                 }
+            } else if (data.getData() != null) {
+                Uri uri = data.getData();
+                addItem(uri, nameOf(uri));
             }
         } catch (Exception e) {
             status.setText("تعذر قراءة الملفات: " + safeMessage(e));
@@ -301,17 +328,10 @@ public class MainActivity extends Activity {
         updateSelected();
     }
 
-    private void collectDoc(DocumentFile document) {
-        if (document == null) {
-            return;
-        }
-        if (document.isFile()) {
-            addItem(document.getUri(), document.getName());
-            return;
-        }
-        for (DocumentFile child : document.listFiles()) {
-            collectDoc(child);
-        }
+    private void collectDoc(DocumentFile d) {
+        if (d == null) return;
+        if (d.isFile()) { addItem(d.getUri(), d.getName()); return; }
+        for (DocumentFile child : d.listFiles()) collectDoc(child);
     }
 
     private void addItem(Uri uri, String name) {
@@ -319,395 +339,165 @@ public class MainActivity extends Activity {
     }
 
     private String nameOf(Uri uri) {
-        Cursor cursor = null;
+        Cursor c = null;
         try {
-            cursor = getContentResolver().query(uri, null, null, null, null);
-            if (cursor != null && cursor.moveToFirst()) {
-                int index = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME);
-                if (index >= 0) {
-                    return cursor.getString(index);
-                }
+            c = getContentResolver().query(uri, null, null, null, null);
+            if (c != null && c.moveToFirst()) {
+                int i = c.getColumnIndex(OpenableColumns.DISPLAY_NAME);
+                if (i >= 0) return c.getString(i);
             }
         } catch (Exception ignored) {
         } finally {
-            if (cursor != null) {
-                cursor.close();
-            }
+            if (c != null) c.close();
         }
         return "file_" + System.currentTimeMillis();
+    }
+
+    private long sizeOf(Uri uri) {
+        Cursor c = null;
+        try {
+            c = getContentResolver().query(uri, null, null, null, null);
+            if (c != null && c.moveToFirst()) {
+                int i = c.getColumnIndex(OpenableColumns.SIZE);
+                if (i >= 0 && !c.isNull(i)) return c.getLong(i);
+            }
+        } catch (Exception ignored) {
+        } finally {
+            if (c != null) c.close();
+        }
+        if ("file".equals(uri.getScheme())) return new File(uri.getPath()).length();
+        return -1;
     }
 
     private void updateSelected() {
         selectedView.setText(selected.isEmpty() ? "لم يتم اختيار ملفات" : "عدد الملفات المحددة: " + selected.size());
     }
 
-    private String buildTargetUrl(String input) {
-        String value = input == null ? "" : input.trim();
-        if (value.length() == 0) {
-            return "";
-        }
-        if (!value.startsWith("http://") && !value.startsWith("https://")) {
-            value = "http://" + value;
-        }
-        Uri uri = Uri.parse(value);
-        String host = uri.getHost();
-        if (host == null && value.startsWith("http://")) {
-            host = value.substring(7);
-            int slash = host.indexOf('/');
-            if (slash >= 0) {
-                host = host.substring(0, slash);
-            }
-            int colon = host.indexOf(':');
-            if (colon >= 0) {
-                host = host.substring(0, colon);
-            }
-        }
-        int port = uri.getPort() > 0 ? uri.getPort() : PORT;
-        String path = uri.getPath();
-        if (path == null || path.length() == 0 || "/".equals(path)) {
-            path = "/upload";
-        }
-        return "http://" + host + ":" + port + path;
-    }
-
     private void sendSelected() {
-        if (selected.isEmpty()) {
-            Toast.makeText(this, "اختر ملفات أولًا", Toast.LENGTH_SHORT).show();
-            return;
-        }
-        final String rawTarget = target.getText().toString().trim();
-        final String base = buildTargetUrl(rawTarget);
-        if (base.length() == 0 || base.contains("null")) {
-            Toast.makeText(this, "اكتب عنوان الجهاز المستقبل", Toast.LENGTH_SHORT).show();
-            return;
-        }
-        prefs.edit().putString(KEY_TARGET, rawTarget).apply();
+        if (selected.isEmpty()) { Toast.makeText(this, "اختر ملفات أولًا", Toast.LENGTH_SHORT).show(); return; }
+        final String host = cleanHost(target.getText().toString());
+        if (host.length() == 0) { Toast.makeText(this, "اكتب IP الجهاز المستقبل", Toast.LENGTH_SHORT).show(); return; }
+        prefs.edit().putString(KEY_TARGET, host).apply();
+        target.setText(host);
         progress.setProgress(0);
-        status.setText("بدأ الإرسال إلى " + base);
+        status.setText("بدأ الإرسال إلى " + host + ":" + PORT);
 
         new Thread(new Runnable() {
-            @Override
-            public void run() {
+            @Override public void run() {
                 int sent = 0;
-                String error = "";
                 for (Item item : selected) {
                     try {
-                        sendOne(base, item, sent, selected.size());
+                        sendOne(host, item);
                         sent++;
-                        final int count = sent;
-                        runOnUiThread(new Runnable() {
-                            @Override
-                            public void run() {
-                                status.setText("تم إرسال " + count + " من " + selected.size());
-                                progress.setProgress((count * 100) / selected.size());
-                            }
-                        });
+                        ui("تم إرسال " + sent + " من " + selected.size(), 100);
                     } catch (Exception e) {
-                        error = safeMessage(e);
-                        break;
+                        ui("توقف بعد " + sent + " ملف: " + safeMessage(e), -1);
+                        return;
                     }
                 }
-                final int finalSent = sent;
-                final String finalError = error;
-                runOnUiThread(new Runnable() {
-                    @Override
-                    public void run() {
-                        if (finalError.length() == 0) {
-                            progress.setProgress(100);
-                            status.setText("اكتمل الإرسال: " + finalSent + " ملف");
-                        } else {
-                            status.setText("توقف بعد " + finalSent + " ملف: " + finalError);
-                        }
-                    }
-                });
+                ui("اكتمل الإرسال: " + sent + " ملف", 100);
             }
         }).start();
     }
 
-    private void sendOne(String base, Item item, final int completedBefore, final int totalFiles) throws Exception {
-        String separator = base.contains("?") ? "&" : "?";
-        URL url = new URL(base + separator + "name=" + URLEncoder.encode(item.name, "UTF-8"));
-        HttpURLConnection connection = (HttpURLConnection) url.openConnection();
-        connection.setConnectTimeout(20000);
-        connection.setReadTimeout(120000);
-        connection.setRequestMethod("PUT");
-        connection.setDoOutput(true);
-        connection.setChunkedStreamingMode(64 * 1024);
-        connection.setRequestProperty("Content-Type", "application/octet-stream");
-        connection.setRequestProperty("X-File-Name", URLEncoder.encode(item.name, "UTF-8"));
+    private void sendOne(String host, Item item) throws Exception {
+        Uri uri = Uri.parse(item.uri);
+        long size = sizeOf(uri);
+        if (size < 0) throw new Exception("تعذر معرفة حجم الملف: " + item.name);
 
-        InputStream input = open(item.uri);
-        OutputStream output = connection.getOutputStream();
-        byte[] buffer = new byte[64 * 1024];
-        int read;
-        long transferred = 0;
-        long totalBytes = sizeOf(item.uri);
-        while ((read = input.read(buffer)) != -1) {
-            output.write(buffer, 0, read);
-            transferred += read;
-            if (totalBytes > 0) {
-                final int filePercent = (int) Math.min(100, (transferred * 100L) / totalBytes);
-                final int overall = (int) (((completedBefore * 100L) + filePercent) / Math.max(1, totalFiles));
-                runOnUiThread(new Runnable() {
-                    @Override
-                    public void run() {
-                        progress.setProgress(overall);
-                    }
-                });
-            }
-        }
-        output.flush();
-        output.close();
-        input.close();
-
-        int code = connection.getResponseCode();
-        String response = readSmall(connection, code);
-        connection.disconnect();
-        if (code < 200 || code >= 300) {
-            throw new Exception("HTTP " + code + (response.length() > 0 ? " - " + response : ""));
-        }
-    }
-
-    private String readSmall(HttpURLConnection connection, int code) {
-        InputStream stream = null;
+        Socket socket = new Socket();
+        socket.connect(new java.net.InetSocketAddress(host, PORT), 15000);
+        socket.setSoTimeout(120000);
+        DataOutputStream out = new DataOutputStream(new BufferedOutputStream(socket.getOutputStream(), 64 * 1024));
+        DataInputStream reply = new DataInputStream(new BufferedInputStream(socket.getInputStream()));
+        InputStream in = open(uri);
         try {
-            stream = code >= 200 && code < 400 ? connection.getInputStream() : connection.getErrorStream();
-            if (stream == null) {
-                return "";
+            out.writeUTF(MAGIC);
+            out.writeUTF(item.name);
+            out.writeLong(size);
+            byte[] buffer = new byte[64 * 1024];
+            long done = 0;
+            int n;
+            while ((n = in.read(buffer)) != -1) {
+                out.write(buffer, 0, n);
+                done += n;
+                final int percent = size == 0 ? 100 : (int)((done * 100L) / size);
+                ui("جاري إرسال: " + item.name + " — " + percent + "%", percent);
             }
-            byte[] data = new byte[1024];
-            int count = stream.read(data);
-            return count > 0 ? new String(data, 0, count, "UTF-8") : "";
-        } catch (Exception ignored) {
-            return "";
+            out.flush();
+            String response = reply.readUTF();
+            if (!"OK".equals(response)) throw new Exception(response);
         } finally {
-            try {
-                if (stream != null) stream.close();
-            } catch (Exception ignored) {
-            }
+            try { in.close(); } catch (Exception ignored) {}
+            try { socket.close(); } catch (Exception ignored) {}
         }
     }
 
-    private long sizeOf(String value) {
-        Cursor cursor = null;
-        try {
-            Uri uri = Uri.parse(value);
-            if ("file".equals(uri.getScheme())) {
-                return new File(uri.getPath()).length();
-            }
-            cursor = getContentResolver().query(uri, new String[]{OpenableColumns.SIZE}, null, null, null);
-            if (cursor != null && cursor.moveToFirst()) {
-                int index = cursor.getColumnIndex(OpenableColumns.SIZE);
-                if (index >= 0 && !cursor.isNull(index)) {
-                    return cursor.getLong(index);
-                }
-            }
-        } catch (Exception ignored) {
-        } finally {
-            if (cursor != null) cursor.close();
-        }
-        return -1;
+    private InputStream open(Uri uri) throws Exception {
+        if ("file".equals(uri.getScheme())) return new FileInputStream(new File(uri.getPath()));
+        InputStream in = getContentResolver().openInputStream(uri);
+        if (in == null) throw new Exception("تعذر فتح الملف");
+        return in;
     }
 
-    private InputStream open(String value) throws Exception {
-        Uri uri = Uri.parse(value);
-        if ("file".equals(uri.getScheme())) {
-            return new FileInputStream(new File(uri.getPath()));
-        }
-        InputStream input = getContentResolver().openInputStream(uri);
-        if (input == null) {
-            throw new Exception("تعذر فتح الملف");
-        }
-        return input;
-    }
-
-    private class LocalServer extends NanoHTTPD {
-        LocalServer(int port) {
-            super(port);
-        }
-
-        @Override
-        public Response serve(IHTTPSession session) {
-            String path = session.getUri();
-            if (Method.GET.equals(session.getMethod())) {
-                return uploadPage();
-            }
-            if (!"/upload".equals(path)) {
-                return newFixedLengthResponse(Response.Status.NOT_FOUND, "text/plain; charset=utf-8", "Not found");
-            }
-            if (Method.PUT.equals(session.getMethod())) {
-                return receiveRaw(session);
-            }
-            if (Method.POST.equals(session.getMethod())) {
-                return receiveMultipart(session);
-            }
-            return newFixedLengthResponse(Response.Status.METHOD_NOT_ALLOWED, "text/plain; charset=utf-8", "Use PUT or POST");
-        }
-
-        private Response uploadPage() {
-            String html = "<!doctype html><html lang='ar' dir='rtl'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
-                    + "<title>الإرسال المحلي</title><style>body{font-family:Arial;padding:20px;max-width:700px;margin:auto}button,input{font-size:18px;padding:12px;margin:8px 0;width:100%}#s{white-space:pre-wrap}</style></head><body>"
-                    + "<h2>إرسال ملفات إلى الهاتف</h2><p>اختر عدة ملفات، وسيتم إرسالها واحدًا تلو الآخر بطريقة Streaming.</p>"
-                    + "<input id='f' type='file' multiple><button onclick='send()'>إرسال الملفات</button><div id='s'>جاهز</div>"
-                    + "<script>async function send(){var fs=document.getElementById('f').files,s=document.getElementById('s');if(!fs.length){s.textContent='اختر ملفات أولًا';return;}for(var i=0;i<fs.length;i++){s.textContent='إرسال '+(i+1)+' من '+fs.length+' : '+fs[i].name;var r=await fetch('/upload?name='+encodeURIComponent(fs[i].name),{method:'PUT',headers:{'Content-Type':'application/octet-stream'},body:fs[i]});if(!r.ok){s.textContent='فشل: HTTP '+r.status;return;}}s.textContent='اكتمل إرسال '+fs.length+' ملف';}</script></body></html>";
-            return newFixedLengthResponse(Response.Status.OK, "text/html; charset=utf-8", html);
-        }
-
-        private Response receiveRaw(IHTTPSession session) {
-            String name = getIncomingName(session);
-            try {
-                OutputTarget target = createOutputTarget(name);
-                InputStream input = session.getInputStream();
-                copyStream(input, target.output);
-                target.output.close();
-                final String savedName = target.displayName;
-                runOnUiThread(new Runnable() {
-                    @Override
-                    public void run() {
-                        status.setText("تم استلام: " + savedName);
-                    }
-                });
-                return newFixedLengthResponse(Response.Status.OK, "text/plain; charset=utf-8", "OK");
-            } catch (Exception e) {
-                final String message = safeMessage(e);
-                runOnUiThread(new Runnable() {
-                    @Override
-                    public void run() {
-                        status.setText("فشل الاستقبال: " + message);
-                    }
-                });
-                return newFixedLengthResponse(Response.Status.INTERNAL_ERROR, "text/plain; charset=utf-8", message);
-            }
-        }
-
-        private Response receiveMultipart(IHTTPSession session) {
-            try {
-                Map<String, String> files = new HashMap<String, String>();
-                session.parseBody(files);
-                if (files.isEmpty()) {
-                    return newFixedLengthResponse(Response.Status.BAD_REQUEST, "text/plain; charset=utf-8", "No file");
-                }
-                int saved = 0;
-                for (Map.Entry<String, String> entry : files.entrySet()) {
-                    File temp = new File(entry.getValue());
-                    if (!temp.exists()) continue;
-                    String name = getIncomingName(session);
-                    if (files.size() > 1) name = entry.getKey() + "_" + name;
-                    OutputTarget target = createOutputTarget(name);
-                    InputStream input = new FileInputStream(temp);
-                    copyStream(input, target.output);
-                    input.close();
-                    target.output.close();
-                    saved++;
-                }
-                final int count = saved;
-                runOnUiThread(new Runnable() {
-                    @Override
-                    public void run() {
-                        status.setText("تم استلام " + count + " ملف من الكمبيوتر");
-                    }
-                });
-                return newFixedLengthResponse(Response.Status.OK, "text/plain; charset=utf-8", "OK " + saved);
-            } catch (Exception e) {
-                return newFixedLengthResponse(Response.Status.INTERNAL_ERROR, "text/plain; charset=utf-8", safeMessage(e));
-            }
-        }
-
-        private String getIncomingName(IHTTPSession session) {
-            String name = null;
-            List<String> values = session.getParameters().get("name");
-            if (values != null && !values.isEmpty()) {
-                name = values.get(0);
-            }
-            if ((name == null || name.length() == 0) && session.getHeaders().containsKey("x-file-name")) {
-                name = session.getHeaders().get("x-file-name");
-            }
-            try {
-                if (name != null) name = URLDecoder.decode(name, "UTF-8");
-            } catch (Exception ignored) {
-            }
-            if (name == null || name.trim().length() == 0) {
-                name = "file_" + System.currentTimeMillis();
-            }
-            return uniqueSafeName(name);
-        }
-    }
-
-    static class OutputTarget {
+    static class SaveTarget {
         OutputStream output;
-        String displayName;
-
-        OutputTarget(OutputStream output, String displayName) {
-            this.output = output;
-            this.displayName = displayName;
-        }
+        SaveTarget(OutputStream output) { this.output = output; }
     }
 
-    private OutputTarget createOutputTarget(String requestedName) throws Exception {
-        String name = uniqueSafeName(requestedName);
+    private SaveTarget createSaveTarget(String name) throws Exception {
+        String safe = safeName(name);
         if (Build.VERSION.SDK_INT >= 29) {
-            ContentValues values = new ContentValues();
-            values.put(MediaStore.Downloads.DISPLAY_NAME, name);
-            values.put(MediaStore.Downloads.MIME_TYPE, "application/octet-stream");
-            values.put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/LocalSend");
-            Uri uri = getContentResolver().insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values);
-            if (uri == null) {
-                throw new Exception("تعذر إنشاء الملف في Download/LocalSend");
-            }
-            OutputStream output = getContentResolver().openOutputStream(uri);
-            if (output == null) {
-                throw new Exception("تعذر فتح الملف للحفظ");
-            }
-            return new OutputTarget(output, name);
+            ContentValues v = new ContentValues();
+            v.put(MediaStore.Downloads.DISPLAY_NAME, safe);
+            v.put(MediaStore.Downloads.MIME_TYPE, "application/octet-stream");
+            v.put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/LocalSend");
+            Uri uri = getContentResolver().insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, v);
+            if (uri == null) throw new Exception("تعذر إنشاء الملف");
+            OutputStream out = getContentResolver().openOutputStream(uri);
+            if (out == null) throw new Exception("تعذر فتح ملف الحفظ");
+            return new SaveTarget(out);
         }
-
-        File directory = new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "LocalSend");
-        if (!directory.exists() && !directory.mkdirs()) {
-            throw new Exception("تعذر إنشاء مجلد Download/LocalSend");
-        }
-        File destination = uniqueFile(directory, name);
-        return new OutputTarget(new FileOutputStream(destination), destination.getName());
+        File dir = new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "LocalSend");
+        if (!dir.exists() && !dir.mkdirs()) throw new Exception("تعذر إنشاء مجلد LocalSend");
+        File file = uniqueFile(dir, safe);
+        return new SaveTarget(new BufferedOutputStream(new FileOutputStream(file), 64 * 1024));
     }
 
-    private void copyStream(InputStream input, OutputStream output) throws Exception {
-        byte[] buffer = new byte[64 * 1024];
-        int read;
-        while ((read = input.read(buffer)) != -1) {
-            output.write(buffer, 0, read);
-        }
-        output.flush();
-    }
-
-    private String uniqueSafeName(String name) {
-        String cleaned = name.replaceAll("[\\\\/:*?\"<>|]", "_").trim();
-        if (cleaned.length() == 0) cleaned = "file_" + System.currentTimeMillis();
-        return cleaned;
-    }
-
-    private File uniqueFile(File directory, String name) {
-        File file = new File(directory, name);
-        if (!file.exists()) return file;
+    private File uniqueFile(File dir, String name) {
+        File f = new File(dir, name);
+        if (!f.exists()) return f;
+        String base = name, ext = "";
         int dot = name.lastIndexOf('.');
-        String base = dot > 0 ? name.substring(0, dot) : name;
-        String ext = dot > 0 ? name.substring(dot) : "";
-        int index = 1;
-        while (file.exists()) {
-            file = new File(directory, base + " (" + index + ")" + ext);
-            index++;
-        }
-        return file;
+        if (dot > 0) { base = name.substring(0, dot); ext = name.substring(dot); }
+        int i = 1;
+        while ((f = new File(dir, base + " (" + i + ")" + ext)).exists()) i++;
+        return f;
+    }
+
+    private String safeName(String name) {
+        if (name == null || name.trim().length() == 0) return "file_" + System.currentTimeMillis();
+        return name.replaceAll("[\\\\/:*?\"<>|]", "_");
     }
 
     private String safeMessage(Exception e) {
-        String message = e.getMessage();
-        return message == null || message.length() == 0 ? e.getClass().getSimpleName() : message;
+        if (e instanceof SocketTimeoutException) return "انتهت مهلة الاتصال";
+        String m = e.getMessage();
+        return (m == null || m.length() == 0) ? e.getClass().getSimpleName() : m;
+    }
+
+    private void ui(final String text, final int percent) {
+        runOnUiThread(new Runnable() {
+            @Override public void run() {
+                status.setText(text);
+                if (percent >= 0) progress.setProgress(percent);
+            }
+        });
     }
 
     @Override
     protected void onDestroy() {
-        if (server != null) {
-            server.stop();
-        }
+        stopReceiver();
         super.onDestroy();
     }
 }

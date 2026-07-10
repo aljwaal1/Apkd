@@ -23,43 +23,39 @@ jobs:
         with:
           gradle-version: '8.7'
 
-      - name: Build both APKs
+      - name: Build signed APKs
         run: gradle :app:assembleRelease :modern:assembleRelease
 
-      - name: Show generated APK files
-        run: find . -type f -path '*/build/outputs/apk/*/*.apk' -print
-
-      - name: Copy APKs
+      - name: Locate, verify and copy APKs
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p apk
 
-          LEGACY_APK=$(find app/build/outputs/apk -type f -name '*.apk' | head -n 1)
-          MODERN_APK=$(find modern/build/outputs/apk -type f -name '*.apk' | head -n 1)
+          LEGACY_APK=$(find app/build/outputs/apk/release -type f -name '*.apk' | head -n 1)
+          MODERN_APK=$(find modern/build/outputs/apk/release -type f -name '*.apk' | head -n 1)
 
-          if [ -z "${LEGACY_APK:-}" ]; then
-            echo "Legacy APK was not generated"
-            exit 1
-          fi
-
-          if [ -z "${MODERN_APK:-}" ]; then
-            echo "Modern APK was not generated"
-            exit 1
-          fi
+          test -n "${LEGACY_APK:-}" || { echo "Legacy APK was not generated"; exit 1; }
+          test -n "${MODERN_APK:-}" || { echo "Modern APK was not generated"; exit 1; }
 
           echo "Legacy APK: $LEGACY_APK"
           echo "Modern APK: $MODERN_APK"
+
+          APKSIGNER=$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -n 1)
+          test -x "$APKSIGNER" || { echo "apksigner was not found"; exit 1; }
+
+          "$APKSIGNER" verify --verbose --print-certs "$LEGACY_APK"
+          "$APKSIGNER" verify --verbose --print-certs "$MODERN_APK"
 
           cp "$LEGACY_APK" apk/Apkd-Legacy-Android-4.4.apk
           cp "$MODERN_APK" apk/Apkd-Modern.apk
 
           ls -lh apk
 
-      - name: Commit APKs
+      - name: Commit installable APKs
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add apk/Apkd-Legacy-Android-4.4.apk apk/Apkd-Modern.apk
-          git diff --cached --quiet || git commit -m "Build modern and legacy APKs"
+          git diff --cached --quiet || git commit -m "Build signed modern and legacy APKs"
           git push

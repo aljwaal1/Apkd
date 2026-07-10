@@ -26,11 +26,35 @@ jobs:
       - name: Build both APKs
         run: gradle :app:assembleRelease :modern:assembleRelease
 
+      - name: Show generated APK files
+        run: find . -type f -path '*/build/outputs/apk/*/*.apk' -print
+
       - name: Copy APKs
+        shell: bash
         run: |
+          set -euo pipefail
           mkdir -p apk
-          cp app/build/outputs/apk/release/app-release.apk apk/Apkd-Legacy-Android-4.4.apk
-          cp modern/build/outputs/apk/release/modern-release.apk apk/Apkd-Modern.apk
+
+          LEGACY_APK=$(find app/build/outputs/apk -type f -name '*.apk' | head -n 1)
+          MODERN_APK=$(find modern/build/outputs/apk -type f -name '*.apk' | head -n 1)
+
+          if [ -z "${LEGACY_APK:-}" ]; then
+            echo "Legacy APK was not generated"
+            exit 1
+          fi
+
+          if [ -z "${MODERN_APK:-}" ]; then
+            echo "Modern APK was not generated"
+            exit 1
+          fi
+
+          echo "Legacy APK: $LEGACY_APK"
+          echo "Modern APK: $MODERN_APK"
+
+          cp "$LEGACY_APK" apk/Apkd-Legacy-Android-4.4.apk
+          cp "$MODERN_APK" apk/Apkd-Modern.apk
+
+          ls -lh apk
 
       - name: Commit APKs
         run: |

@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
+<title>تحميل تطبيقات APK</title>
+<style>
+:root{--bg:#eef7ff;--card:#fff;--ink:#09264a;--muted:#60708b;--line:#d8e6f5;--blue:#2563eb;--green:#16a34a;--amber:#d97706;--red:#b91c1c}
+*{box-sizing:border-box}body{margin:0;font-family:Tahoma,Arial,sans-serif;background:linear-gradient(135deg,#eef7ff,#f7fff8);color:var(--ink)}
+.wrap{max-width:920px;margin:auto;padding:14px}.hero,.card{background:var(--card);border:1px solid var(--line);border-radius:22px;padding:16px;box-shadow:0 10px 28px rgba(9,38,74,.08);margin-bottom:13px}
+h1{margin:0 0 8px;font-size:24px}h2{margin:0 0 10px;font-size:18px}.sub,.small{color:var(--muted);line-height:1.8;margin:0}.small{font-size:12px}
+.grid{display:grid;grid-template-columns:1fr;gap:10px;margin-top:14px}label{display:block;font-size:13px;color:var(--muted);margin-bottom:6px}
+input{width:100%;border:1px solid var(--line);border-radius:14px;padding:13px;background:#fff;font-size:15px;color:var(--ink);direction:ltr;text-align:left}
+.token-wrap{display:flex;gap:8px}.token-wrap input{flex:1}
+button,a.btn{display:inline-flex;align-items:center;justify-content:center;text-decoration:none;border:0;border-radius:14px;padding:12px 14px;font-weight:700;cursor:pointer;font-size:14px;margin:3px 0;min-height:44px}
+button:disabled{opacity:.55}.primary{background:var(--blue);color:#fff}.green{background:var(--green);color:#fff}.amber{background:var(--amber);color:#fff}.ghost{background:#edf4ff;color:var(--ink);border:1px solid var(--line)}
+.row{display:flex;gap:8px;flex-wrap:wrap}.row>*{flex:1 1 150px}
+.note{background:#fffbeb;border:1px solid #fde68a;color:#92400e;border-radius:14px;padding:12px;margin:12px 0;line-height:1.8}.ok{background:#ecfdf5;border-color:#bbf7d0;color:#065f46}.bad{background:#fef2f2;border-color:#fecaca;color:var(--red)}
+.progress{height:12px;background:#eaf1f8;border-radius:999px;overflow:hidden;margin-top:10px}.bar{height:100%;width:0;background:linear-gradient(90deg,#2563eb,#16a34a);transition:width .2s}
+.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:12px}.stat{background:#f8fbff;border:1px solid var(--line);border-radius:14px;padding:10px;text-align:center}.stat b{display:block;font-size:20px}
+.results{display:grid;gap:10px}.repo-card{border:1px solid var(--line);border-radius:18px;padding:13px;background:#fbfdff}.repo-head{display:flex;align-items:flex-start;justify-content:space-between;gap:10px;flex-wrap:wrap}.repo-head h3{margin:0;font-size:17px}
+.version-grid{display:grid;grid-template-columns:1fr;gap:10px;margin-top:12px}.version{background:#fff;border:1px solid var(--line);border-radius:15px;padding:11px}.version-title{display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap}
+.badge{display:inline-block;border-radius:999px;padding:5px 9px;font-size:11px;font-weight:bold}.modern{background:#dcfce7;color:#166534}.legacy{background:#ffedd5;color:#9a3412}.loading{background:#e0ecff;color:#1d4ed8}.missing{background:#f1f5f9;color:#475569}.error{background:#fee2e2;color:#991b1b}
+.meta{font-size:12px;color:var(--muted);line-height:1.8;word-break:break-word;margin-top:7px}.actions{display:flex;gap:7px;flex-wrap:wrap;margin-top:10px}.actions>*{flex:1 1 135px}.hide{display:none!important}
+@media(min-width:700px){.two{grid-template-columns:1fr 1fr}.version-grid{grid-template-columns:1fr 1fr}}
+</style>
+</head>
+<body>
+<div class="wrap">
+<div class="hero">
+<h1>تحميل تطبيقات APK</h1>
+<p class="sub">تفحص الأداة النسخة الحديثة داخل <b>main/apk</b> ونسخة Android 4.4 داخل <b>android-4.4/apk</b>.</p>
+<div class="grid two">
+<div><label>اسم حساب GitHub</label><input id="owner" value="aljwaal1"></div>
+<div><label>اسم مستودع محدد — اختياري</label><input id="repo" placeholder="مثال: KIDSGAME"></div>
+<div style="grid-column:1/-1"><label>GitHub Token — اختياري</label><div class="token-wrap"><input id="token" type="password" placeholder="github_pat_... أو ghp_..."><button class="ghost" onclick="toggleToken(this)">إظهار</button></div></div>
+</div>
+<div class="row" style="margin-top:12px">
+<button id="scanBtn" class="primary" onclick="scan()">فحص المستودعات</button>
+<button class="green" onclick="saveAll()">حفظ الروابط</button>
+<button class="amber" onclick="refreshResults()">تحديث</button>
+<button class="green" onclick="saveSettings()">حفظ الإعدادات</button>
+<button class="ghost" onclick="clearSettings()">حذف الإعدادات</button>
+<button class="ghost" onclick="clearResults()">مسح النتائج</button>
+</div>
+<div class="note">التطبيق يعمل على الهاتف ويحفظ الإعدادات والروابط محليًا. يفضّل Token عند فحص عدد كبير من المستودعات.</div>
+<div id="message" class="note hide"></div>
+<div id="progressWrap" class="hide"><div class="progress"><div id="bar" class="bar"></div></div><p id="progressText" class="small" style="margin-top:7px"></p></div>
+<div class="stats"><div class="stat"><b id="repoCount">0</b><span class="small">مستودع</span></div><div class="stat"><b id="modernCount">0</b><span class="small">حديث</span></div><div class="stat"><b id="legacyCount">0</b><span class="small">Android 4.4</span></div></div>
+</div>
+<div class="card"><h2>التطبيقات</h2><p id="empty" class="small">اضغط «فحص المستودعات».</p><div id="results" class="results"></div></div>
+</div>
+<script>
+const API='https://api.github.com',KEY='apk_dual_branch_mobile_v1',RESULTS_KEY='apk_dual_branch_saved_results_v1';
+let total=0,done=0,modern=0,legacy=0;
+const $=id=>document.getElementById(id);
+function clean(v){return String(v||'').trim().replace(/^https?:\/\/github\.com\//i,'').replace(/^\/+|\/+$/g,'')}
+function esc(v){return String(v??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]))}
+function toggleToken(b){$('token').type=$('token').type==='password'?'text':'password';b.textContent=$('token').type==='password'?'إظهار':'إخفاء'}
+function msg(t,bad=false){$('message').textContent=t;$('message').className='note '+(bad?'bad':'ok')}
+function saveSettings(){localStorage.setItem(KEY,JSON.stringify({owner:clean($('owner').value),repo:clean($('repo').value),token:$('token').value.trim()}));msg('تم حفظ الإعدادات.')}
+function saveAll(){saveSettings();saveResults();msg('تم حفظ الإعدادات والروابط. ستبقى ظاهرة بعد إغلاق التطبيق.')}
+function saveResults(){const payload={html:$('results').innerHTML,total:$('repoCount').textContent,modern:$('modernCount').textContent,legacy:$('legacyCount').textContent,savedAt:new Date().toISOString()};localStorage.setItem(RESULTS_KEY,JSON.stringify(payload))}
+function loadSavedResults(){try{const d=JSON.parse(localStorage.getItem(RESULTS_KEY)||'null');if(!d||!d.html)return;$('results').innerHTML=d.html;$('repoCount').textContent=d.total||'0';$('modernCount').textContent=d.modern||'0';$('legacyCount').textContent=d.legacy||'0';$('empty').classList.add('hide');msg('تم تحميل الروابط المحفوظة.')}catch(e){}}
+function loadSettings(){try{let d=JSON.parse(localStorage.getItem(KEY)||'null');if(d){$('owner').value=d.owner||'aljwaal1';$('repo').value=d.repo||'';$('token').value=d.token||''}}catch(e){}}
+function clearSettings(){localStorage.removeItem(KEY);$('owner').value='aljwaal1';$('repo').value='';$('token').value='';msg('تم حذف الإعدادات.')}
+function clearResults(){$('results').innerHTML='';$('empty').classList.remove('hide');$('repoCount').textContent=$('modernCount').textContent=$('legacyCount').textContent='0';$('message').classList.add('hide');localStorage.removeItem(RESULTS_KEY)}
+function refreshResults(){scan()}
+function headers(){let h={'Accept':'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28'},t=$('token').value.trim();if(t)h.Authorization='Bearer '+t;return h}
+async function api(url){let r;try{r=await fetch(url,{headers:headers(),cache:'no-store'})}catch(e){throw Error('فشل الاتصال')}if(r.status===401)throw Error('GitHub Token غير صحيح');if(r.status===403)throw Error('تم تجاوز حد GitHub أو رفض الطلب');if(r.status===404)return null;if(!r.ok)throw Error('فشل الاتصال — '+r.status);return r.json()}
+async function repos(owner,repo){if(repo){let x=await api(`${API}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`);return x?[x]:[]}let out=[];for(let p=1;p<=3;p++){let x=await api(`${API}/users/${encodeURIComponent(owner)}/repos?per_page=100&page=${p}&sort=updated&direction=desc&type=owner`);if(!Array.isArray(x))break;out.push(...x.filter(r=>!r.archived));if(x.length<100)break}return out}
+async function files(owner,repo,branch){let x=await api(`${API}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/contents/apk?ref=${encodeURIComponent(branch)}`);if(!Array.isArray(x))return[];return x.filter(f=>f.type==='file'&&/\.apk$/i.test(f.name)).map(f=>({name:f.name,size:+(f.size||0),url:`https://raw.githubusercontent.com/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/${encodeURIComponent(branch)}/apk/${encodeURIComponent(f.name)}`}))}
+function size(n){let u=['بايت','KB','MB','GB'],i=0;while(n>=1024&&i<u.length-1){n/=1024;i++}return n.toFixed(i?1:0)+' '+u[i]}
+function state(kind,status,file){let old=kind==='legacy',title=old?'نسخة Android 4.4':'النسخة الحديثة';if(status==='loading')return `<div class="version"><div class="version-title"><b>${title}</b><span class="badge loading">جاري الفحص</span></div></div>`;if(status==='missing')return `<div class="version"><div class="version-title"><b>${title}</b><span class="badge missing">غير متوفرة</span></div></div>`;if(status==='error')return `<div class="version"><div class="version-title"><b>${title}</b><span class="badge error">فشل الاتصال</span></div></div>`;return `<div class="version"><div class="version-title"><b>${title}</b><span class="badge ${old?'legacy':'modern'}">${old?'Android 4.4':'النسخة متوفرة'}</span></div><div class="meta">الملف: ${esc(file.name)}<br>الحجم: ${size(file.size)}</div><div class="actions"><a class="btn ${old?'amber':'green'}" href="${esc(file.url)}" download="${esc(file.name)}">${old?'تنزيل نسخة Android 4.4':'تنزيل النسخة الحديثة'}</a></div></div>`}
+function addCard(owner,repo){let id='r_'+repo.replace(/[^a-zA-Z0-9_-]/g,'_'),el=document.createElement('div');el.className='repo-card';el.innerHTML=`<div class="repo-head"><h3>${esc(repo)}</h3><a class="btn ghost" href="https://github.com/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/actions" target="_blank">فتح Actions</a></div><div class="version-grid"><div id="${id}_m">${state('modern','loading')}</div><div id="${id}_l">${state('legacy','loading')}</div></div>`;$('results').appendChild(el);return id}
+async function scanRepo(owner,repo){let id=addCard(owner,repo),mf=null,lf=null,ms='missing',ls='missing';try{let a=await files(owner,repo,'main');mf=a[0]||null;ms=mf?'ok':'missing';if(mf)modern++}catch(e){ms='error'}try{let a=await files(owner,repo,'android-4.4');lf=a[0]||null;ls=lf?'ok':'missing';if(lf)legacy++}catch(e){ls='error'}$(id+'_m').innerHTML=state('modern',ms,mf);$(id+'_l').innerHTML=state('legacy',ls,lf);done++;$('modernCount').textContent=modern;$('legacyCount').textContent=legacy;$('bar').style.width=Math.round(done/total*100)+'%';$('progressText').textContent=`تم فحص ${done} من ${total}: ${repo}`;saveResults()}
+async function scan(){clearResults();let owner=clean($('owner').value),repo=clean($('repo').value);if(repo.includes('/'))repo=repo.split('/').filter(Boolean).pop();if(!owner){msg('اكتب اسم حساب GitHub.',true);return}$('scanBtn').disabled=true;$('progressWrap').classList.remove('hide');$('empty').classList.add('hide');$('progressText').textContent='جاري جلب المستودعات...';try{let list=await repos(owner,repo);if(!list.length)throw Error('لم يتم العثور على مستودعات');total=list.length;done=modern=legacy=0;$('repoCount').textContent=total;for(let r of list)await scanRepo(owner,r.name);saveResults();msg(`اكتمل الفحص: ${modern} حديثة و${legacy} Android 4.4.`)}catch(e){msg(e.message||'فشل الاتصال',true)}finally{$('scanBtn').disabled=false;$('progressWrap').classList.add('hide')}}
+window.addEventListener('DOMContentLoaded',function(){loadSettings();loadSavedResults();});
+</script>
+</body>
+</html>

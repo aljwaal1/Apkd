@@ -12,7 +12,7 @@ public class SoundMainActivity extends MainActivity {
     private float downY;
     private long lastSoundAt;
 
-    @Override protected void onCreate(Bundle savedInstanceState) {
+    @Override public void onCreate(Bundle savedInstanceState) {
         tones = new ToneGenerator(AudioManager.STREAM_MUSIC, 47);
         super.onCreate(savedInstanceState);
     }

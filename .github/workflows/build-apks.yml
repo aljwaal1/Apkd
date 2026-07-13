@@ -1,18 +1,27 @@
-name: Build APK Downloader and LocalSend
+name: Build APK Downloader Android 4.4
 
 on:
   workflow_dispatch:
   push:
-    branches: [ main ]
+    branches: [ legacy-android-4.4 ]
+    paths:
+      - 'app/**'
+      - '.github/workflows/build-apks.yml'
 
 permissions:
   contents: write
+
+concurrency:
+  group: apkd-legacy-android-4.4
+  cancel-in-progress: true
 
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: legacy-android-4.4
 
       - uses: actions/setup-java@v4
         with:
@@ -23,44 +32,33 @@ jobs:
         with:
           gradle-version: '8.7'
 
-      - name: Build signed APKs
-        run: gradle :app:assembleRelease :modern:assembleRelease :localsend:assembleRelease :dualdownloader:assembleRelease
+      - name: Build Android 4.4 APK only
+        run: gradle :app:clean :app:assembleRelease --no-daemon
 
-      - name: Locate, verify and copy APKs
+      - name: Locate, verify and copy legacy APK
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p apk
-
+          mkdir -p apk/legacy
           LEGACY_APK=$(find app/build/outputs/apk/release -type f -name '*.apk' | head -n 1)
-          MODERN_APK=$(find modern/build/outputs/apk/release -type f -name '*.apk' | head -n 1)
-          LOCALSEND_APK=$(find localsend/build/outputs/apk/release -type f -name '*.apk' | head -n 1)
-          DUALDOWNLOADER_APK=$(find dualdownloader/build/outputs/apk/release -type f -name '*.apk' | head -n 1)
-
           test -n "${LEGACY_APK:-}" || { echo "Legacy APK was not generated"; exit 1; }
-          test -n "${MODERN_APK:-}" || { echo "Modern APK was not generated"; exit 1; }
-          test -n "${LOCALSEND_APK:-}" || { echo "LocalSend APK was not generated"; exit 1; }
-          test -n "${DUALDOWNLOADER_APK:-}" || { echo "Dual Downloader APK was not generated"; exit 1; }
-
+          test -s "$LEGACY_APK"
+          unzip -t "$LEGACY_APK" >/dev/null
           APKSIGNER=$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -n 1)
           test -x "$APKSIGNER" || { echo "apksigner was not found"; exit 1; }
-
           "$APKSIGNER" verify --verbose --print-certs "$LEGACY_APK"
-          "$APKSIGNER" verify --verbose --print-certs "$MODERN_APK"
-          "$APKSIGNER" verify --verbose --print-certs "$LOCALSEND_APK"
-          "$APKSIGNER" verify --verbose --print-certs "$DUALDOWNLOADER_APK"
+          cp "$LEGACY_APK" apk/legacy/Apkd-Legacy-Android-4.4.apk
 
-          cp "$LEGACY_APK" apk/Apkd-Legacy-Android-4.4.apk
-          cp "$MODERN_APK" apk/Apkd-Modern.apk
-          cp "$LOCALSEND_APK" apk/LocalSend-Phone-to-Phone.apk
-          cp "$DUALDOWNLOADER_APK" apk/APK-Downloader-Modern-and-Android-4.4.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: apkd-legacy-android-4.4
+          path: apk/legacy/Apkd-Legacy-Android-4.4.apk
 
-          ls -lh apk
-
-      - name: Commit installable APKs
+      - name: Commit legacy APK only
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add apk/Apkd-Legacy-Android-4.4.apk apk/Apkd-Modern.apk apk/LocalSend-Phone-to-Phone.apk apk/APK-Downloader-Modern-and-Android-4.4.apk
-          git diff --cached --quiet || git commit -m "Build APK downloader and LocalSend APKs"
-          git push
+          git add apk/legacy/Apkd-Legacy-Android-4.4.apk
+          git diff --cached --quiet || git commit -m "Build APK downloader Android 4.4 with sounds"
+          git pull --rebase origin legacy-android-4.4
+          git push origin HEAD:legacy-android-4.4
